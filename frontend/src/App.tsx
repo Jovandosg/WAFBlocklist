@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState, type FormEvent } from "react";
+import { useEffect, useLayoutEffect, useMemo, useState, type FormEvent } from "react";
 import {
   AlertCircle,
   ArrowLeft,
@@ -11,12 +11,13 @@ import {
   FileCheck2,
   LoaderCircle,
   Lock,
+  Moon,
   Network,
   RefreshCw,
   RotateCcw,
   Search,
-  ShieldCheck,
   Sparkles,
+  Sun,
   TriangleAlert,
   X,
 } from "lucide-react";
@@ -39,6 +40,8 @@ const emptyForm: ChangePlanRequest = {
 };
 
 const stepLabels = ["Consulta", "Bloqueio", "Revisão"];
+type Theme = "dark" | "light";
+const themeStorageKey = "wafblocklist-theme";
 
 function lines(value: string) {
   return value.split("\n").map((item) => item.trim()).filter(Boolean);
@@ -49,6 +52,10 @@ function extractError(error: unknown) {
 }
 
 export default function App() {
+  const [theme, setTheme] = useState<Theme>(() => {
+    const savedTheme = window.localStorage.getItem(themeStorageKey);
+    return savedTheme === "light" || savedTheme === "dark" ? savedTheme : "dark";
+  });
   const [accounts, setAccounts] = useState<Account[]>([]);
   const [form, setForm] = useState<ChangePlanRequest>(emptyForm);
   const [step, setStep] = useState(0);
@@ -63,6 +70,14 @@ export default function App() {
   const [targetError, setTargetError] = useState("");
   const [queryResult, setQueryResult] = useState<TargetQueryResponse | null>(null);
   const [queryLoading, setQueryLoading] = useState(false);
+
+  useLayoutEffect(() => {
+    document.documentElement.dataset.theme = theme;
+    document.documentElement.style.colorScheme = theme;
+    window.localStorage.setItem(themeStorageKey, theme);
+    const themeColor = document.querySelector<HTMLMetaElement>('meta[name="theme-color"]');
+    if (themeColor) themeColor.content = theme === "dark" ? "#061317" : "#f3f8fa";
+  }, [theme]);
 
   const selectedAccounts = useMemo(() => accounts.filter((account) => form.account_ids.includes(account.id)), [accounts, form.account_ids]);
   const blockTargets = useMemo(() => [
@@ -218,8 +233,29 @@ export default function App() {
   return (
     <div className="app-shell">
       <header className="topbar">
-        <div className="brand-lockup"><span className="brand-mark"><ShieldCheck size={21} /></span><span><strong>WAF <em>Blocklist</em></strong><small>SECURITY OPERATIONS CONSOLE</small></span></div>
-        <div className="topbar-status"><span className="status-dot" /> Ambiente de desenvolvimento <span className="divider" /> <code>v0.1.0</code></div>
+        <div className="brand-lockup">
+          <span className="brand-mark" aria-hidden="true">
+            <svg className="brand-logo" viewBox="0 0 42 44" fill="none">
+              <circle cx="21" cy="14" r="9" stroke="currentColor" strokeWidth="1.5" />
+              <path d="M12.5 14h17M21 5c-5.7 5-5.7 13 0 18m0-18c5.7 5 5.7 13 0 18M14.2 9.5c4.2 2.8 9.6 2.8 13.6 0m-13.6 9c4.2-2.8 9.6-2.8 13.6 0" stroke="currentColor" strokeWidth="1" />
+              <text x="21" y="40" fill="currentColor" textAnchor="middle" fontFamily="Arial, sans-serif" fontSize="8" fontWeight="700" letterSpacing=".4">CCoE</text>
+            </svg>
+          </span>
+          <span><strong>WAF <em>Blocklist</em></strong><small>SECURITY OPERATIONS CONSOLE</small></span>
+        </div>
+        <div className="topbar-actions">
+          <button
+            type="button"
+            className="theme-toggle"
+            aria-label={`Alternar para o tema ${theme === "dark" ? "claro" : "escuro"}`}
+            aria-pressed={theme === "dark"}
+            onClick={() => setTheme((current) => current === "dark" ? "light" : "dark")}
+          >
+            {theme === "dark" ? <Sun size={15} /> : <Moon size={15} />}
+            <span>{theme === "dark" ? "Claro" : "Escuro"}</span>
+          </button>
+          <div className="topbar-status"><span className="status-dot" /> Ambiente de desenvolvimento <span className="divider" /> <code>v0.1.0</code></div>
+        </div>
       </header>
 
       <main className="app-layout">
