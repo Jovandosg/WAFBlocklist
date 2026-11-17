@@ -1,0 +1,72 @@
+from fastapi.testclient import TestClient
+
+from backend.app.main import app
+
+
+client = TestClient(app)
+
+
+def test_lookup_endpoint_normalizes_url():
+    response = client.post("/api/v1/targets/lookup", json={"target": "https://Example.com/path"})
+
+    assert response.status_code == 200
+    assert response.json() == {
+        "kind": "domain",
+        "normalized": "example.com",
+        "display": "DOMÍNIO · example.com",
+    }
+
+
+def test_query_endpoint_returns_one_result_per_connected_account():
+    response = client.post(
+        "/api/v1/targets/query",
+        json={
+            "account_ids": ["123456789012", "210987654321", "345678901234"],
+            "target": "192.0.2.10",
+        },
+    )
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["mode"] == "mocked"
+    assert body["target"]["normalized"] == "192.0.2.10/32"
+    assert len(body["matches"]) == 3
+    assert body["matches"][0]["status"] == "found"
+    assert body["matches"][0]["locations"] == ["IP Set ccoe-blocklist-ipv4"]
+    assert all(match["status"] == "not_found" for match in body["matches"][1:])
+
+
+def test_query_endpoint_reports_url_in_waf_rule():
+    response = client.post(
+        "/api/v1/targets/query",
+        json={
+            "account_ids": ["123456789012", "210987654321"],
+            "target": "https://example.com/path",
+        },
+    )
+
+    assert response.status_code == 200
+    matches = response.json()["matches"]
+    assert matches[0]["status"] == "found"
+    assert matches[0]["locations"] == ["Web ACL block-domains"]
+    assert matches[1]["status"] == "not_found"
+
+
+def test_query_endpoint_rejects_unknown_account():
+    response = client.post(
+        "/api/v1/targets/query",
+        json={"account_ids": ["999999999999"], "target": "192.0.2.10"},
+    )
+
+    assert response.status_code == 422
+    assert "não autorizada" in response.json()["detail"]
+
+
+def test_query_endpoint_rejects_invalid_target():
+    response = client.post(
+        "/api/v1/targets/query",
+        json={"account_ids": ["123456789012"], "target": "not an ip or url"},
+    )
+
+    assert response.status_code == 422
+    assert "Domínio inválido" in response.json()["detail"]

@@ -1,0 +1,19 @@
+{
+  "name": "wafblocklist",
+  "private": true,
+  "version": "0.1.0",
+  "packageManager": "npm@10.8.2",
+  "scripts": {
+    "dev": "concurrently -k \"npm --prefix frontend run dev\" \"python -m uvicorn backend.app.main:app --reload --port 8000\"",
+    "dev:frontend": "npm --prefix frontend run dev",
+    "dev:backend": "python -m uvicorn backend.app.main:app --reload --port 8000",
+    "build": "npm --prefix frontend run build",
+    "check": "npm --prefix frontend run check && python -m compileall backend",
+    "infra:package": "bash infra/build-lambda.sh",
+    "infra:fmt": "terraform -chdir=infra fmt -recursive",
+    "infra:validate": "terraform -chdir=infra validate"
+  },
+  "devDependencies": {
+    "concurrently": "^9.1.2"
+  }
+}

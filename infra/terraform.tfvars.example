@@ -1,0 +1,17 @@
+aws_region = "us-east-1"
+environment = "dev"
+project_name = "wafblocklist"
+
+# Add the AWS accounts where the read-only role already exists.
+# Leave empty to deploy in mock mode for development.
+target_account_ids = [
+  "123456789012",
+  "210987654321",
+]
+
+target_role_name = "wafblocklist-readonly-query"
+cors_origins = "http://localhost:3000"
+lambda_timeout_seconds = 60
+lambda_memory_size = 512
+lambda_reserved_concurrency = 10
+log_retention_days = 30
