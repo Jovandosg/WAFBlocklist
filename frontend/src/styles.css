@@ -72,5 +72,10 @@ code, .eyebrow, .field-count, .limit-note, .topbar-status, .dry-run-badge, .rail
 .theme-toggle { display: inline-flex; align-items: center; gap: 7px; min-height: 34px; padding: 0 11px; border:1px solid var(--line); background:var(--surface); color:var(--ink); font-size: 10px; font-weight: 700; transition: .16s ease; }
 .theme-toggle:hover { border-color:var(--brand-cyan); color:var(--brand-cyan); }
 .theme-toggle:focus-visible { outline: 2px solid var(--brand-cyan); outline-offset: 2px; }
-.region-field { width: 82px; padding: 2px 5px; border: 1px solid var(--line); background: var(--surface); color: var(--brand-cyan); font: inherit; font-family: 'DM Mono', ui-monospace, monospace; font-size: 9px; text-align: center; }
+.helper-line { flex-wrap: wrap; }
+.region-field, .scope-select, .region-select { min-height: 22px; padding: 2px 5px; border: 1px solid var(--line); background: var(--surface); color: var(--brand-cyan); font: inherit; font-family: 'DM Mono', ui-monospace, monospace; font-size: 9px; }
+.region-field { width: 82px; text-align: center; }
+.scope-select { width: 92px; }
+.region-select { max-width: 150px; }
+.scope-select:focus-visible, .region-select:focus-visible { outline: 2px solid var(--brand-cyan); outline-offset: 2px; }
 @media (max-width: 760px) { .topbar { padding: 0 14px; }.topbar-actions { gap: 0; }.theme-toggle { min-height: 32px; padding: 0 9px; } }

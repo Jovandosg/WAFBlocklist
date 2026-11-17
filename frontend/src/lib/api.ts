@@ -31,9 +31,13 @@ export interface TargetQueryMatch {
 
 export interface TargetQueryResponse {
   target: TargetLookup;
+  scope: WafScope;
+  region: string;
   mode: "aws_read_only" | "mocked";
   matches: TargetQueryMatch[];
 }
+
+export type WafScope = "CLOUDFRONT" | "REGIONAL";
 
 export interface ChangePlanRequest {
   account_ids: string[];
@@ -99,6 +103,11 @@ export async function getAccounts(): Promise<Account[]> {
   return response.items;
 }
 
+export async function getWafRegions(): Promise<string[]> {
+  const response = await request<{ items: string[] }>("/regions");
+  return response.items;
+}
+
 export async function lookupTarget(target: string): Promise<TargetLookup> {
   return request<TargetLookup>("/targets/lookup", {
     method: "POST",
@@ -106,10 +115,15 @@ export async function lookupTarget(target: string): Promise<TargetLookup> {
   });
 }
 
-export async function queryTarget(accountIds: string[], target: string): Promise<TargetQueryResponse> {
+export async function queryTarget(
+  accountIds: string[],
+  target: string,
+  scope: WafScope,
+  region: string,
+): Promise<TargetQueryResponse> {
   return request<TargetQueryResponse>("/targets/query", {
     method: "POST",
-    body: JSON.stringify({ account_ids: accountIds, target }),
+    body: JSON.stringify({ account_ids: accountIds, target, scope, region }),
   });
 }
 

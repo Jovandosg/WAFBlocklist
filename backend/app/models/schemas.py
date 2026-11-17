@@ -6,12 +6,16 @@ from datetime import datetime
 from typing import Literal
 from uuid import uuid4
 
+from botocore.session import get_session
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 
 DOMAIN_PATTERN = re.compile(r"([a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z0-9-]{2,63}")
 MAX_ASNS = 100
 MAX_DOMAINS = 30
+CLOUDFRONT_REGION = "us-east-1"
+AWS_WAF_REGIONS = frozenset(get_session().get_available_regions("wafv2"))
+WafScope = Literal["CLOUDFRONT", "REGIONAL"]
 
 
 def split_lines(values: list[str]) -> list[str]:
@@ -98,6 +102,21 @@ def normalize_target(raw: str) -> TargetLookupResponse:
 class TargetQueryRequest(BaseModel):
     account_ids: list[str] = Field(min_length=1)
     target: str = Field(min_length=1, max_length=2048)
+    scope: WafScope = "CLOUDFRONT"
+    region: str = CLOUDFRONT_REGION
+
+    @field_validator("region")
+    @classmethod
+    def region_is_supported(cls, value: str) -> str:
+        if value not in AWS_WAF_REGIONS:
+            raise ValueError(f"Região AWS não suportada para WAFv2: {value}")
+        return value
+
+    @model_validator(mode="after")
+    def cloudfront_region_is_fixed(self) -> TargetQueryRequest:
+        if self.scope == "CLOUDFRONT" and self.region != CLOUDFRONT_REGION:
+            raise ValueError(f"O escopo CloudFront usa a região {CLOUDFRONT_REGION}.")
+        return self
 
 
 class TargetQueryMatch(BaseModel):
@@ -110,6 +129,8 @@ class TargetQueryMatch(BaseModel):
 
 class TargetQueryResponse(BaseModel):
     target: TargetLookupResponse
+    scope: WafScope
+    region: str
     mode: Literal["aws_read_only", "mocked"]
     matches: list[TargetQueryMatch]
 

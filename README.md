@@ -35,8 +35,9 @@ A documentação interativa da API fica em `http://localhost:8000/docs`.
 
 - `GET /api/v1/health` — status do serviço;
 - `GET /api/v1/accounts` — contas AWS mockadas;
+- `GET /api/v1/regions` — regiões AWS disponíveis para WAFv2 Regional;
 - `POST /api/v1/targets/lookup` — recebe um IP, CIDR ou URL/domínio digitado pelo usuário e devolve o alvo normalizado;
-- `POST /api/v1/targets/query` — consulta o alvo nas contas selecionadas em modo AWS read-only;
+- `POST /api/v1/targets/query` — consulta o alvo nas contas selecionadas em modo AWS read-only, no escopo CloudFront ou Regional;
 - `POST /api/v1/validate` — validação e normalização do payload;
 - `POST /api/v1/plans` — cria plano DRY-RUN;
 - `GET /api/v1/plans/{plan_id}` — consulta plano em memória.
@@ -60,9 +61,9 @@ O endpoint faz validação e normalização; ele não consulta DNS ou threat int
 
 ## Consulta nas contas conectadas
 
-Quando `AWS_ACCOUNT_IDS` estiver configurado e `USE_MOCK_AWS=false`, o backend usa a sessão AWS da aplicação para a conta atual e assume `AWS_ROLE_NAME` nas demais contas via STS. A região do WAF CloudFront permanece `us-east-1`.
+Quando `AWS_ACCOUNT_IDS` estiver configurado e `USE_MOCK_AWS=false`, o backend usa a sessão AWS da aplicação para a conta atual e assume `AWS_ROLE_NAME` nas demais contas via STS. O escopo CloudFront permanece fixo em `us-east-1`; para WAF Regional, o usuário pode selecionar uma região disponível para WAFv2.
 
-Ao clicar em **Consultar nas contas**, o backend faz somente leituras: procura IPv4/IPv6 nos IP Sets `ccoe-blocklist-ipv4` e `ccoe-blocklist-ipv6`, procura domínios na regra `block-domains` da Web ACL `ccoe-cloudfront-blocklist` e lista as distribuições CloudFront associadas a essa Web ACL. Nenhuma criação, atualização ou associação é executada.
+Ao clicar em **Consultar nas contas**, o backend faz somente leituras. No escopo CloudFront, procura IPv4/IPv6 nos IP Sets `ccoe-blocklist-ipv4` e `ccoe-blocklist-ipv6`, procura domínios na regra `block-domains` da Web ACL `ccoe-cloudfront-blocklist` e lista as distribuições CloudFront associadas a essa Web ACL. No escopo Regional, consulta os IP Sets e Web ACLs da região selecionada, procurando os endereços IP e a regra `block-domains`. Nenhuma criação, atualização ou associação é executada.
 
 A role usada na consulta deve permitir apenas ações de leitura, como `sts:GetCallerIdentity`, `sts:AssumeRole`, `wafv2:ListIPSets`, `wafv2:GetIPSet`, `wafv2:ListWebACLs`, `wafv2:GetWebACL` e `cloudfront:ListDistributions`. O resultado informa por conta se o alvo foi encontrado, não encontrado ou se houve erro de autorização/conectividade.
 

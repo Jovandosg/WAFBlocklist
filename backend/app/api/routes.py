@@ -1,6 +1,6 @@
 from fastapi import APIRouter, HTTPException
 
-from backend.app.models.schemas import ChangePlan, ChangePlanRequest, TargetLookupRequest, TargetLookupResponse, TargetQueryRequest, TargetQueryResponse, normalize_target
+from backend.app.models.schemas import AWS_WAF_REGIONS, ChangePlan, ChangePlanRequest, TargetLookupRequest, TargetLookupResponse, TargetQueryRequest, TargetQueryResponse, normalize_target
 from backend.app.services.plans import plan_service
 
 router = APIRouter()
@@ -14,6 +14,11 @@ def health() -> dict[str, str]:
 @router.get("/accounts")
 def list_accounts():
     return {"items": plan_service.list_accounts()}
+
+
+@router.get("/regions")
+def list_waf_regions() -> dict[str, list[str]]:
+    return {"items": sorted(AWS_WAF_REGIONS)}
 
 
 @router.post("/targets/lookup", response_model=TargetLookupResponse)

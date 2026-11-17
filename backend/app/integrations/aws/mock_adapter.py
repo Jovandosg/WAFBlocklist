@@ -8,9 +8,11 @@ from botocore.exceptions import BotoCoreError, ClientError, NoCredentialsError
 
 from backend.app.models.schemas import (
     Account,
+    CLOUDFRONT_REGION,
     Distribution,
     TargetLookupResponse,
     TargetQueryMatch,
+    WafScope,
 )
 
 ROLE_NAME = os.getenv("AWS_ROLE_NAME", "OrganizationAccountAccessRole")
@@ -70,40 +72,70 @@ class AwsSecurityAdapter:
                 continue
         return result
 
-    def query_target(self, account_id: str, target: TargetLookupResponse) -> TargetQueryMatch:
+    def query_target(
+        self,
+        account_id: str,
+        target: TargetLookupResponse,
+        scope: WafScope = "CLOUDFRONT",
+        region: str = CLOUDFRONT_REGION,
+    ) -> TargetQueryMatch:
         account = next((item for item in self.list_accounts() if item.id == account_id), None)
         account_name = account.name if account else account_id
         if self.mock_mode:
-            return self._mock_query(account_id, account_name, target)
+            return self._mock_query(account_id, account_name, target, scope, region)
 
         try:
             session = self._session_for(account_id)
-            waf = session.client("wafv2", region_name=REGION)
-            cloudfront = session.client("cloudfront", region_name=REGION)
+            waf_region = CLOUDFRONT_REGION if scope == "CLOUDFRONT" else region
+            waf = session.client("wafv2", region_name=waf_region)
             locations: list[str] = []
 
             if target.kind in {"ipv4", "ipv6"}:
-                ipset_name = IPSET_NAMES[target.kind]
-                ipset = self._find_named(waf, "ip_sets", ipset_name)
-                if ipset:
-                    detail = waf.get_ip_set(Name=ipset_name, Scope="CLOUDFRONT", Id=ipset["Id"])["IPSet"]
+                if scope == "CLOUDFRONT":
+                    ipset_name = IPSET_NAMES[target.kind]
+                    ipsets = []
+                    ipset = self._find_named(waf, "ip_sets", ipset_name, scope)
+                    if ipset:
+                        ipsets.append(ipset)
+                else:
+                    ipsets = self._list_all(waf, "ip_sets", scope)
+                for ipset in ipsets:
+                    detail = waf.get_ip_set(
+                        Name=ipset["Name"],
+                        Scope=scope,
+                        Id=ipset["Id"],
+                    )["IPSet"]
                     if target.normalized in detail.get("Addresses", []):
-                        locations.append(f"IP Set {ipset_name}")
+                        locations.append(f"IP Set {ipset['Name']}")
 
-            acl = self._find_named(waf, "web_acls", ACL_NAME)
-            if acl:
-                web_acl = waf.get_web_acl(Name=ACL_NAME, Scope="CLOUDFRONT", Id=acl["Id"])["WebACL"]
+            if scope == "CLOUDFRONT":
+                acl = self._find_named(waf, "web_acls", ACL_NAME, scope)
+                web_acls = [acl] if acl else []
+            elif target.kind == "domain":
+                web_acls = self._list_all(waf, "web_acls", scope)
+            else:
+                web_acls = []
+
+            for acl in web_acls:
+                web_acl = waf.get_web_acl(
+                    Name=acl["Name"],
+                    Scope=scope,
+                    Id=acl["Id"],
+                )["WebACL"]
                 if target.kind == "domain":
                     for rule in web_acl.get("Rules", []):
                         if rule.get("Name") != "block-domains":
                             continue
                         if self._statement_contains_domain(rule.get("Statement", {}), target.normalized):
-                            locations.append("Web ACL block-domains")
+                            locations.append(f"Web ACL {acl['Name']} / block-domains")
                             break
-                for page in cloudfront.get_paginator("list_distributions").paginate():
-                    for distribution in page.get("DistributionList", {}).get("Items", []):
-                        if distribution.get("WebACLId") == acl["ARN"]:
-                            locations.append(f"CloudFront {distribution['Id']} associada à Web ACL")
+
+                if scope == "CLOUDFRONT":
+                    cloudfront = session.client("cloudfront", region_name=CLOUDFRONT_REGION)
+                    for page in cloudfront.get_paginator("list_distributions").paginate():
+                        for distribution in page.get("DistributionList", {}).get("Items", []):
+                            if distribution.get("WebACLId") == acl["ARN"]:
+                                locations.append(f"CloudFront {distribution['Id']} associada à Web ACL")
 
             return TargetQueryMatch(
                 account_id=account_id,
@@ -137,18 +169,25 @@ class AwsSecurityAdapter:
         )
 
     @staticmethod
-    def _find_named(client: Any, kind: str, name: str) -> dict[str, Any] | None:
+    def _list_all(client: Any, kind: str, scope: WafScope) -> list[dict[str, Any]]:
         marker: dict[str, str] = {}
         method = getattr(client, f"list_{kind}")
         key = {"ip_sets": "IPSets", "web_acls": "WebACLs"}[kind]
+        items: list[dict[str, Any]] = []
         while True:
-            page = method(Scope="CLOUDFRONT", Limit=100, **marker)
-            for item in page.get(key, []):
-                if item["Name"] == name:
-                    return item
-            if not page.get("NextMarker"):
-                return None
-            marker = {"NextMarker": page["NextMarker"]}
+            page = method(Scope=scope, Limit=100, **marker)
+            items.extend(page.get(key, []))
+            next_marker = page.get("NextMarker")
+            if not next_marker:
+                return items
+            marker = {"NextMarker": next_marker}
+
+    @staticmethod
+    def _find_named(client: Any, kind: str, name: str, scope: WafScope) -> dict[str, Any] | None:
+        return next(
+            (item for item in AwsSecurityAdapter._list_all(client, kind, scope) if item["Name"] == name),
+            None,
+        )
 
     @staticmethod
     def _statement_contains_domain(statement: dict[str, Any], target: str) -> bool:
@@ -162,12 +201,20 @@ class AwsSecurityAdapter:
         return False
 
     @staticmethod
-    def _mock_query(account_id: str, account_name: str, target: TargetLookupResponse) -> TargetQueryMatch:
+    def _mock_query(
+        account_id: str,
+        account_name: str,
+        target: TargetLookupResponse,
+        scope: WafScope,
+        region: str,
+    ) -> TargetQueryMatch:
         known = {
             ("123456789012", "ipv4", "192.0.2.10/32"): "IP Set ccoe-blocklist-ipv4",
             ("123456789012", "domain", "example.com"): "Web ACL block-domains",
         }
         location = known.get((account_id, target.kind, target.normalized))
+        if location and scope == "REGIONAL":
+            location = f"{location} · {region}"
         return TargetQueryMatch(
             account_id=account_id,
             account_name=account_name,

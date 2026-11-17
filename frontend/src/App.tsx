@@ -23,7 +23,7 @@ import {
 } from "lucide-react";
 import { TextListField } from "./components/FormFields";
 import { ReviewPanel } from "./components/ReviewPanel";
-import { createPlan, getAccounts, lookupTarget, queryTarget, type Account, type ChangePlan, type ChangePlanRequest, type TargetLookup, type TargetQueryResponse } from "./lib/api";
+import { createPlan, getAccounts, getWafRegions, lookupTarget, queryTarget, type Account, type ChangePlan, type ChangePlanRequest, type TargetLookup, type TargetQueryResponse, type WafScope } from "./lib/api";
 
 const emptyForm: ChangePlanRequest = {
   account_ids: [],
@@ -57,6 +57,9 @@ export default function App() {
     return savedTheme === "light" || savedTheme === "dark" ? savedTheme : "dark";
   });
   const [accounts, setAccounts] = useState<Account[]>([]);
+  const [wafRegions, setWafRegions] = useState<string[]>([]);
+  const [queryScope, setQueryScope] = useState<WafScope>("CLOUDFRONT");
+  const [wafRegion, setWafRegion] = useState("us-east-1");
   const [form, setForm] = useState<ChangePlanRequest>(emptyForm);
   const [step, setStep] = useState(0);
   const [plan, setPlan] = useState<ChangePlan | null>(null);
@@ -91,11 +94,19 @@ export default function App() {
   ].length, [form]);
 
   useEffect(() => {
-    getAccounts().then((loadedAccounts) => {
+    Promise.all([getAccounts(), getWafRegions()]).then(([loadedAccounts, regions]) => {
       setAccounts(loadedAccounts);
+      setWafRegions(regions);
       setForm((current) => ({ ...current, account_ids: loadedAccounts.map((account) => account.id) }));
     }).catch((requestError) => setError(extractError(requestError))).finally(() => setLoadingAccounts(false));
   }, []);
+
+  const runTargetQuery = (accountIds: string[], target: string) => queryTarget(
+    accountIds,
+    target,
+    queryScope,
+    queryScope === "CLOUDFRONT" ? "us-east-1" : wafRegion,
+  );
 
   const updateField = (field: keyof ChangePlanRequest, value: string | boolean) => {
     setPlan(null);
@@ -132,7 +143,7 @@ export default function App() {
         setQueryResult(null);
         setQueryLoading(true);
         try {
-          setQueryResult(await queryTarget(connectedAccountIds, result.normalized));
+          setQueryResult(await runTargetQuery(connectedAccountIds, result.normalized));
         } finally {
           setQueryLoading(false);
         }
@@ -161,7 +172,7 @@ export default function App() {
     setTargetError("");
     try {
       setForm((current) => ({ ...current, account_ids: connectedAccountIds }));
-      setQueryResult(await queryTarget(connectedAccountIds, targetLookup.normalized));
+      setQueryResult(await runTargetQuery(connectedAccountIds, targetLookup.normalized));
     } catch (requestError) {
       setTargetError(extractError(requestError));
     } finally {
@@ -283,7 +294,7 @@ export default function App() {
           {loadingAccounts ? <div className="loading-state"><LoaderCircle className="spin" size={24} /><span>Carregando contas autorizadas...</span></div> : error && accounts.length === 0 ? <div className="error-state"><AlertCircle size={20} /><div><strong>Não foi possível carregar o escopo</strong><p>{error}</p></div><button type="button" className="icon-button" onClick={() => window.location.reload()}><RefreshCw size={16} /></button></div> : (
             <form onSubmit={submitPlan}>
               {step === 0 && <div className="step-content">
-                <div className="intro-copy"><span className="section-index">01</span><div><p>Digite primeiro o endereço IP ou a URL. A aplicação consulta automaticamente todas as contas conectadas e informa onde o valor está cadastrado.</p><span className="helper-line"><Cloud size={14} /> A consulta usa somente leitura no WAF CloudFront em <input className="region-field" aria-label="Região AWS fixa para CloudFront" title="O WAF do CloudFront usa sempre us-east-1." value="us-east-1" readOnly /> (região fixa).</span></div></div>
+                <div className="intro-copy"><span className="section-index">01</span><div><p>Digite primeiro o endereço IP ou a URL. A aplicação consulta automaticamente todas as contas conectadas e informa onde o valor está cadastrado.</p><span className="helper-line"><Cloud size={14} /> A consulta usa somente leitura no WAF <select className="scope-select" aria-label="Escopo do WAF" value={queryScope} disabled={queryLoading} onChange={(event) => { const scope = event.currentTarget.value; if (scope === "CLOUDFRONT" || scope === "REGIONAL") { setQueryScope(scope); setQueryResult(null); } }}><option value="CLOUDFRONT">CloudFront</option><option value="REGIONAL">Regional</option></select>{queryScope === "CLOUDFRONT" ? <> em <input className="region-field" aria-label="Região AWS fixa para CloudFront" title="O WAF do CloudFront usa sempre us-east-1." value="us-east-1" readOnly /> (região fixa).</> : <> na região <select className="region-select" aria-label="Região AWS para WAF Regional" value={wafRegion} disabled={queryLoading} onChange={(event) => { setWafRegion(event.currentTarget.value); setQueryResult(null); }}>{wafRegions.map((region) => <option key={region} value={region}>{region}</option>)}</select>.</>}</span></div></div>
                 <div className="target-capture field-section"><div className="section-heading"><div><span className="eyebrow">Consulta global</span><h3>Qual IP ou URL você quer localizar?</h3></div><span className="selection-count">{accounts.length} contas conectadas</span></div><div className="target-search-row"><div className="target-input-wrap"><Search size={17} /><input value={targetInput} onChange={(event) => { setTargetInput(event.target.value); setTargetError(""); }} onKeyDown={(event) => { if (event.key === "Enter") { event.preventDefault(); void searchTarget(); } }} placeholder="Digite um IP, CIDR ou URL..." /></div><button type="button" className="button button-target" onClick={() => void searchTarget()} disabled={targetLoading || queryLoading}>{targetLoading || queryLoading ? <LoaderCircle className="spin" size={16} /> : <Search size={16} />} {targetLoading || queryLoading ? "Consultando contas" : "Consultar todas as contas"}</button></div>{targetError && <div className="inline-error"><AlertCircle size={15} />{targetError}</div>}{targetLookup && <div className="target-found"><CheckCircle2 size={16} /><span><strong>Alvo normalizado:</strong> {targetLookup.display}</span><button type="button" className="button button-query" onClick={() => void querySelectedAccounts()} disabled={queryLoading}>{queryLoading ? <LoaderCircle className="spin" size={14} /> : <Search size={14} />} {queryLoading ? "Consultando contas" : "Consultar novamente"}</button></div>}{queryResult && <div className="query-results"><div className="query-results-heading"><span className="eyebrow">Onde está cadastrado</span><span className={`query-mode ${queryResult.mode}`}>{queryResult.mode === "aws_read_only" ? "AWS · READ-ONLY" : "MOCK · DESENVOLVIMENTO"}</span></div>{queryResult.matches.map((match) => <div className="query-row" key={match.account_id}><span className={`query-status ${match.status}`} /> <span className="query-account"><strong>{match.account_name}</strong><code>{match.account_id}</code></span><span className="query-detail">{match.status === "found" ? match.locations.join(" · ") : match.detail}</span></div>)}</div>}{blockTargets.length > 0 && <div className="target-list">{blockTargets.map((target) => <div className="target-chip" key={`${target.field}-${target.value}`}><span className="target-kind"><Network size={13} />{target.kind}</span><code>{target.value}</code><button type="button" onClick={() => removeTarget(target.field, target.value)} aria-label={`Remover ${target.value}`}><X size={14} /></button></div>)}</div>}</div>
                 <div className="security-callout"><span className="callout-icon"><Lock size={17} /></span><div><strong>Consulta sem alteração</strong><p>A pesquisa apenas lê os recursos das contas conectadas. Nenhum IP, domínio ou Web ACL será modificado.</p></div></div>
               </div>}

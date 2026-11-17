@@ -30,10 +30,64 @@ def test_query_endpoint_returns_one_result_per_connected_account():
     body = response.json()
     assert body["mode"] == "mocked"
     assert body["target"]["normalized"] == "192.0.2.10/32"
+    assert body["scope"] == "CLOUDFRONT"
+    assert body["region"] == "us-east-1"
     assert len(body["matches"]) == 3
     assert body["matches"][0]["status"] == "found"
     assert body["matches"][0]["locations"] == ["IP Set ccoe-blocklist-ipv4"]
     assert all(match["status"] == "not_found" for match in body["matches"][1:])
+
+
+def test_regions_endpoint_lists_supported_waf_regions():
+    response = client.get("/api/v1/regions")
+
+    assert response.status_code == 200
+    assert "us-east-1" in response.json()["items"]
+    assert "us-west-2" in response.json()["items"]
+
+
+def test_regional_query_accepts_selected_region():
+    response = client.post(
+        "/api/v1/targets/query",
+        json={
+            "account_ids": ["123456789012"],
+            "target": "192.0.2.10",
+            "scope": "REGIONAL",
+            "region": "us-west-2",
+        },
+    )
+
+    assert response.status_code == 200
+    assert response.json()["scope"] == "REGIONAL"
+    assert response.json()["region"] == "us-west-2"
+
+
+def test_cloudfront_query_rejects_region_other_than_us_east_1():
+    response = client.post(
+        "/api/v1/targets/query",
+        json={
+            "account_ids": ["123456789012"],
+            "target": "192.0.2.10",
+            "scope": "CLOUDFRONT",
+            "region": "us-west-2",
+        },
+    )
+
+    assert response.status_code == 422
+
+
+def test_query_rejects_region_not_supported_by_wafv2():
+    response = client.post(
+        "/api/v1/targets/query",
+        json={
+            "account_ids": ["123456789012"],
+            "target": "192.0.2.10",
+            "scope": "REGIONAL",
+            "region": "not-a-region",
+        },
+    )
+
+    assert response.status_code == 422
 
 
 def test_query_endpoint_reports_url_in_waf_rule():

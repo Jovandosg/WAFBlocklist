@@ -70,9 +70,14 @@ class PlanService:
         if unknown_accounts:
             raise ValueError(f"Conta(s) não autorizada(s) ou inexistente(s): {', '.join(unknown_accounts)}")
         target = normalize_target(request.target)
-        matches = [self.adapter.query_target(account_id, target) for account_id in request.account_ids]
+        matches = [
+            self.adapter.query_target(account_id, target, request.scope, request.region)
+            for account_id in request.account_ids
+        ]
         return TargetQueryResponse(
             target=target,
+            scope=request.scope,
+            region=request.region,
             mode="mocked" if self.adapter.mock_mode else "aws_read_only",
             matches=matches,
         )
