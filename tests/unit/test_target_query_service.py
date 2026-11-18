@@ -1,5 +1,7 @@
 from unittest.mock import Mock, patch
 
+import pytest
+
 from backend.app.integrations.aws.mock_adapter import AwsSecurityAdapter
 from backend.app.models.schemas import TargetLookupResponse, TargetQueryRequest
 from backend.app.services.plans import PlanService
@@ -85,3 +87,70 @@ def test_regional_query_uses_selected_region_and_scope():
     waf.get_ip_set.assert_called_once_with(Name="regional-blocklist", Scope="REGIONAL", Id="set-id")
     assert result.status == "found"
     assert result.locations == ["IP Set regional-blocklist"]
+
+
+def test_live_adapter_lists_active_subaccounts_and_excludes_master():
+    adapter = AwsSecurityAdapter()
+    adapter.mock_mode = False
+    adapter.master_account_id = "588361999793"
+    organizations = Mock()
+    organizations.get_paginator.return_value.paginate.return_value = [{
+        "Accounts": [
+            {"Id": "588361999793", "Name": "master", "State": "ACTIVE"},
+            {"Id": "111111111111", "Name": "active-child", "State": "ACTIVE"},
+            {"Id": "222222222222", "Name": "suspended-child", "State": "SUSPENDED"},
+        ],
+    }]
+    session = Mock()
+    session.client.return_value = organizations
+
+    with patch.object(adapter, "_master_session", return_value=session):
+        accounts = adapter.list_accounts()
+
+    organizations.get_paginator.assert_called_once_with("list_accounts")
+    assert [(account.id, account.name) for account in accounts] == [
+        ("111111111111", "active-child"),
+    ]
+
+
+def test_master_session_rejects_credentials_from_another_account():
+    adapter = AwsSecurityAdapter()
+    adapter.mock_mode = False
+    adapter.master_account_id = "588361999793"
+    session = Mock()
+    session.client.return_value.get_caller_identity.return_value = {"Account": "111111111111"}
+
+    with patch("backend.app.integrations.aws.mock_adapter.boto3.Session", return_value=session):
+        with pytest.raises(RuntimeError, match="devem pertencer à conta master"):
+            adapter._master_session()
+
+
+def test_live_adapter_assumes_read_only_role_from_master_session():
+    adapter = AwsSecurityAdapter()
+    adapter.mock_mode = False
+    adapter.master_account_id = "588361999793"
+    adapter._accounts_by_id = {"111111111111": Mock(id="111111111111")}
+    master_session = Mock()
+    sts = master_session.client.return_value
+    sts.get_caller_identity.return_value = {"Account": adapter.master_account_id}
+    sts.assume_role.return_value = {
+        "Credentials": {
+            "AccessKeyId": "temporary-access-key",
+            "SecretAccessKey": "temporary-secret-key",
+            "SessionToken": "temporary-session-token",
+        },
+    }
+    assumed_session = Mock()
+
+    with patch(
+        "backend.app.integrations.aws.mock_adapter.boto3.Session",
+        side_effect=[master_session, assumed_session],
+    ):
+        result = adapter._session_for("111111111111")
+
+    assert result is assumed_session
+    assume_role = sts.assume_role.call_args.kwargs
+    assert assume_role["RoleArn"] == "arn:aws:iam::111111111111:role/wafblocklist-readonly-query"
+    assert assume_role["ExternalId"] == "wafblocklist-target-111111111111-v1"
+    assert assume_role["SourceIdentity"].startswith("waf-query-")
+    assert assume_role["DurationSeconds"] == 900

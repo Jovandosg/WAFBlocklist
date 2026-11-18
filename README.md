@@ -23,6 +23,8 @@ npm run dev
 
 O frontend ficará em `http://localhost:3000` e a API em `http://localhost:8000`. O Vite encaminha `/api` para o FastAPI.
 
+O modo padrão é simulado. Para consultar uma Organization real localmente, copie `.env.example` para `.env`, defina `USE_MOCK_AWS=false` e use credenciais AWS cujo `GetCallerIdentity` retorne `AWS_MASTER_ACCOUNT_ID`.
+
 Para validar o código:
 
 ```bash
@@ -34,7 +36,7 @@ A documentação interativa da API fica em `http://localhost:8000/docs`.
 ## Endpoints iniciais
 
 - `GET /api/v1/health` — status do serviço;
-- `GET /api/v1/accounts` — contas AWS mockadas;
+- `GET /api/v1/accounts` — contas mockadas ou subcontas ativas da AWS Organization, sem a master;
 - `GET /api/v1/regions` — regiões AWS disponíveis para WAFv2 Regional;
 - `POST /api/v1/targets/lookup` — recebe um IP, CIDR ou URL/domínio digitado pelo usuário e devolve o alvo normalizado;
 - `POST /api/v1/targets/query` — consulta o alvo nas contas selecionadas em modo AWS read-only, no escopo CloudFront ou Regional;
@@ -57,15 +59,15 @@ Na interface, a primeira etapa **Consulta** possui o campo **Qual IP ou URL voc�
 - `2001:db8::1`, normalizado para `2001:db8::1/128`;
 - `https://Example.com/path`, normalizado para `example.com`.
 
-O endpoint faz validação e normalização; ele não consulta DNS ou threat intelligence nesta etapa. Sem `AWS_ACCOUNT_IDS`, o adapter usa dados mockados para desenvolvimento; com essa configuração, ele consulta as contas AWS por meio de STS. Nenhuma credencial AWS deve ser colocada no frontend, em arquivos versionados ou em logs.
+O endpoint faz validação e normalização; ele não consulta DNS ou threat intelligence nesta etapa. No modo mock, o adapter usa dados simulados. No modo AWS, `AWS_MASTER_ACCOUNT_ID` identifica a conta de gerenciamento da Organization; as credenciais da aplicação devem pertencer a essa conta. O backend valida a identidade, lista as contas ativas via AWS Organizations, exclui a master e assume `AWS_ROLE_NAME` em cada subconta. Nenhuma credencial AWS deve ser colocada no frontend, em arquivos versionados ou em logs.
 
 ## Consulta nas contas conectadas
 
-Quando `AWS_ACCOUNT_IDS` estiver configurado e `USE_MOCK_AWS=false`, o backend usa a sessão AWS da aplicação para a conta atual e assume `AWS_ROLE_NAME` nas demais contas via STS. O escopo CloudFront permanece fixo em `us-east-1`; para WAF Regional, o usuário pode selecionar uma região disponível para WAFv2.
+Quando `AWS_MASTER_ACCOUNT_ID` estiver configurado e `USE_MOCK_AWS=false`, o backend exige credenciais da conta master `588361999793`, enumera as subcontas ativas da Organization via `organizations:ListAccounts` e assume `AWS_ROLE_NAME` em cada uma via STS. A role da aplicação só pode assumir essa role nomeada dentro da mesma Organization; cada subconta precisa ter a role read-only criada e confiar na role da aplicação. O escopo CloudFront permanece fixo em `us-east-1`; para WAF Regional, o usuário pode selecionar uma região disponível para WAFv2.
 
 Ao clicar em **Consultar nas contas**, o backend faz somente leituras. No escopo CloudFront, procura IPv4/IPv6 nos IP Sets `ccoe-blocklist-ipv4` e `ccoe-blocklist-ipv6`, procura domínios na regra `block-domains` da Web ACL `ccoe-cloudfront-blocklist` e lista as distribuições CloudFront associadas a essa Web ACL. No escopo Regional, consulta os IP Sets e Web ACLs da região selecionada, procurando os endereços IP e a regra `block-domains`. Nenhuma criação, atualização ou associação é executada.
 
-A role usada na consulta deve permitir apenas ações de leitura, como `sts:GetCallerIdentity`, `sts:AssumeRole`, `wafv2:ListIPSets`, `wafv2:GetIPSet`, `wafv2:ListWebACLs`, `wafv2:GetWebACL` e `cloudfront:ListDistributions`. O resultado informa por conta se o alvo foi encontrado, não encontrado ou se houve erro de autorização/conectividade.
+A role da aplicação precisa de `organizations:ListAccounts`, `sts:GetCallerIdentity`, `sts:AssumeRole` e `sts:SetSourceIdentity`, limitada à role read-only dentro da Organization. A role assumida em cada subconta deve permitir somente leituras como `wafv2:ListIPSets`, `wafv2:GetIPSet`, `wafv2:ListWebACLs`, `wafv2:GetWebACL` e `cloudfront:ListDistributions`. Sua trust policy deve confiar na role da Lambda e exigir o External ID `wafblocklist-target-<ID_DA_CONTA>-v1` e uma Source Identity `waf-query-*`. O resultado informa por conta se o alvo foi encontrado, não encontrado ou se houve erro de autorização/conectividade.
 
 ## Testes
 

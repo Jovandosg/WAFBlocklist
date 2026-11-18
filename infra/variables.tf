@@ -25,14 +25,14 @@ variable "project_name" {
   }
 }
 
-variable "target_account_ids" {
-  description = "AWS accounts where the Lambda may assume the read-only query role."
-  type        = list(string)
-  default     = []
+variable "master_account_id" {
+  description = "AWS Organizations management account that owns and runs the API."
+  type        = string
+  default     = ""
 
   validation {
-    condition     = alltrue([for account_id in var.target_account_ids : can(regex("^[0-9]{12}$", account_id))])
-    error_message = "Every target account ID must be exactly 12 digits."
+    condition     = var.master_account_id == "" || can(regex("^[0-9]{12}$", var.master_account_id))
+    error_message = "master_account_id must be empty or exactly 12 digits."
   }
 }
 

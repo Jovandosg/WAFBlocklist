@@ -9,8 +9,8 @@ API Gateway HTTP API
         |
         v
 Lambda Python 3.12 (FastAPI + Mangum)
-        |
-        +--> STS AssumeRole para roles read-only nas contas alvo
+        +--> AWS Organizations: descoberta das subcontas ativas
+        +--> STS AssumeRole para a role read-only em cada subconta
         +--> WAFv2 e CloudFront em modo somente leitura
         +--> CloudWatch Logs
 ```
@@ -23,7 +23,9 @@ A Lambda não roda dentro de uma EC2. Este módulo usa o runtime gerenciado da L
 - Python 3.12 ou compatível.
 - `pip` e `zip` instalados.
 - Credenciais AWS temporárias com permissão para provisionar IAM, Lambda, API Gateway e CloudWatch Logs.
-- Roles `wafblocklist-readonly-query` previamente criadas nas contas alvo, com trust policy para a role da Lambda central.
+- Permissão `organizations:DescribeOrganization` para a identidade que executa o Terraform.
+- Credenciais de deploy da conta de gerenciamento da Organization.
+- Role `wafblocklist-readonly-query` previamente criada em cada subconta ativa, com trust policy para a role da Lambda central.
 
 ## Deploy
 
@@ -31,7 +33,7 @@ A partir da raiz do projeto:
 
 ```bash
 cp infra/terraform.tfvars.example infra/terraform.tfvars
-# Edite infra/terraform.tfvars com contas, região e origens permitidas.
+# Edite infra/terraform.tfvars com a conta master, região e origens permitidas.
 
 bash infra/build-lambda.sh
 cd infra
@@ -45,11 +47,11 @@ terraform output api_gateway_url
 
 O `build-lambda.sh` instala as dependências em `.build/lambda`, copia o backend e cria `.build/wafblocklist-lambda.zip`. O arquivo `.build` não é versionado.
 
-Para desenvolvimento sem contas AWS reais, deixe `target_account_ids = []`. A Lambda será configurada com `USE_MOCK_AWS=true`. Para produção, informe somente as contas que possuem a role read-only aprovada.
+Para desenvolvimento sem consultas AWS, deixe `master_account_id = ""`. A Lambda será configurada com `USE_MOCK_AWS=true`. Para produção, configure o ID da conta de gerenciamento da Organization. A aplicação enumera as contas ativas, exceto a master; consultas em subcontas só terão êxito quando a role read-only estiver provisionada nelas.
 
 ## Variáveis importantes
 
-- `target_account_ids`: allowlist das contas que a Lambda pode consultar.
+- `master_account_id`: conta de gerenciamento onde a API será executada; a Organization é descoberta pelo Terraform e pela API.
 - `target_role_name`: nome exato da role read-only nas contas alvo.
 - `cors_origins`: origens do frontend separadas por vírgula.
 - `lambda_reserved_concurrency`: limite para evitar excesso de chamadas cross-account.
@@ -57,7 +59,7 @@ Para desenvolvimento sem contas AWS reais, deixe `target_account_ids = []`. A La
 
 ## Segurança
 
-A role da Lambda recebe `sts:AssumeRole` somente para os ARNs derivados de `target_account_ids`. Ela não recebe permissões de escrita no WAF, CloudFront ou DynamoDB. A trust policy e a permissions policy das roles alvo devem ser aplicadas separadamente em cada conta AWS.
+A role da Lambda recebe `organizations:ListAccounts` e pode assumir somente a role nomeada em recursos pertencentes à mesma Organization, usando a condição `aws:ResourceOrgID`. Ela não recebe permissões de escrita no WAF ou CloudFront. A trust policy e a permissions policy read-only das roles alvo devem ser aplicadas separadamente em cada subconta.
 
 Antes de produção:
 

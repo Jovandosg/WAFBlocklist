@@ -17,6 +17,13 @@ def test_lookup_endpoint_normalizes_url():
     }
 
 
+def test_health_endpoint_reports_mock_mode():
+    response = client.get("/api/v1/health")
+
+    assert response.status_code == 200
+    assert response.json()["mode"] == "mocked-dry-run"
+
+
 def test_query_endpoint_returns_one_result_per_connected_account():
     response = client.post(
         "/api/v1/targets/query",

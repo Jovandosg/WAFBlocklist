@@ -2,7 +2,12 @@ locals {
   name_prefix          = "${var.project_name}-${var.environment}"
   lambda_function_name = "${local.name_prefix}-api"
   log_group_name       = "/aws/lambda/${local.lambda_function_name}"
-  target_role_arns     = [for account_id in var.target_account_ids : "arn:aws:iam::${account_id}:role/${var.target_role_name}"]
+}
+
+data "aws_caller_identity" "current" {}
+
+data "aws_organizations_organization" "current" {
+  count = var.master_account_id == "" ? 0 : 1
 }
 
 resource "aws_cloudwatch_log_group" "lambda" {
@@ -42,11 +47,32 @@ data "aws_iam_policy_document" "lambda_execution" {
     resources = ["${aws_cloudwatch_log_group.lambda.arn}:*"]
   }
 
-  statement {
-    sid       = "AssumeOnlyConfiguredTargetRoles"
-    effect    = "Allow"
-    actions   = ["sts:AssumeRole"]
-    resources = local.target_role_arns
+  dynamic "statement" {
+    for_each = var.master_account_id == "" ? [] : [data.aws_organizations_organization.current[0].id]
+
+    content {
+      sid       = "AssumeReadOnlyRoleInOrganization"
+      effect    = "Allow"
+      actions   = ["sts:AssumeRole", "sts:SetSourceIdentity"]
+      resources = ["arn:aws:iam::*:role/${var.target_role_name}"]
+
+      condition {
+        test     = "StringEquals"
+        variable = "aws:ResourceOrgID"
+        values   = [statement.value]
+      }
+    }
+  }
+
+  dynamic "statement" {
+    for_each = var.master_account_id == "" ? [] : [true]
+
+    content {
+      sid       = "DiscoverOrganizationAccounts"
+      effect    = "Allow"
+      actions   = ["organizations:ListAccounts"]
+      resources = ["*"]
+    }
   }
 
   statement {
@@ -96,12 +122,20 @@ resource "aws_lambda_function" "api" {
 
   environment {
     variables = {
-      ENVIRONMENT     = var.environment
-      API_PREFIX      = "/api/v1"
-      CORS_ORIGINS    = var.cors_origins
-      AWS_ACCOUNT_IDS = join(",", var.target_account_ids)
-      AWS_ROLE_NAME   = var.target_role_name
-      USE_MOCK_AWS    = length(var.target_account_ids) == 0 ? "true" : "false"
+      ENVIRONMENT           = var.environment
+      API_PREFIX            = "/api/v1"
+      CORS_ORIGINS          = var.cors_origins
+      AWS_MASTER_ACCOUNT_ID = var.master_account_id
+      AWS_ROLE_NAME         = var.target_role_name
+      AWS_REGION            = var.aws_region
+      USE_MOCK_AWS          = var.master_account_id == "" ? "true" : "false"
+    }
+  }
+
+  lifecycle {
+    precondition {
+      condition     = var.master_account_id == "" || var.master_account_id == data.aws_caller_identity.current.account_id
+      error_message = "Deploy the API using credentials for the configured Organizations management account."
     }
   }
 

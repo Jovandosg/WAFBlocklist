@@ -340,12 +340,8 @@ variable "aws_region" {
   default = "us-east-1"
 }
 
-variable "central_account_id" {
+variable "master_account_id" {
   type = string
-}
-
-variable "target_account_ids" {
-  type = list(string)
 }
 
 variable "target_role_name" {
@@ -373,7 +369,7 @@ variable "lambda_reserved_concurrency" {
 }
 ```
 
-Os IDs de contas e origens permitidas devem ser fornecidos por pipeline ou secret manager, nunca fixados em código da aplicação. Não colocar chaves AWS em `terraform.tfvars`; usar credenciais temporárias, OIDC do CI/CD ou um perfil AWS controlado.
+A conta master deve ser fornecida como configuração; as subcontas ativas são descobertas pela AWS Organizations. Não colocar chaves AWS em `terraform.tfvars`; usar credenciais temporárias, OIDC do CI/CD ou um perfil AWS controlado.
 
 ## Pipeline e ciclo de vida
 
@@ -394,12 +390,12 @@ O plano Terraform deve ser salvo como artefato do pipeline e aplicado somente se
 
 1. Criar o backend remoto e a estrutura `infra/envs`.
 2. Provisionar KMS, DynamoDB e CloudWatch Logs.
-3. Criar as roles da conta central e das contas alvo com permissões read-only.
+3. Criar a role da conta master e a role read-only em cada subconta.
 4. Adaptar o FastAPI para `Mangum` e tornar o adapter AWS configurável por variáveis de ambiente.
 5. Criar ECR, Lambda e API Gateway.
 6. Adicionar autenticação, CORS, throttling e alarmes.
 7. Testar em uma conta AWS de desenvolvimento com uma única role alvo.
-8. Expandir a lista de contas por ambiente e validar `AssumeRole`.
+8. Validar `AssumeRole` em cada subconta ativa descoberta pela Organization.
 9. Habilitar PITR, deletion protection e aprovação de pipeline em produção.
 10. Somente depois desenhar qualquer operação de bloqueio mutável com role separada, aprovação explícita e trilha de auditoria.
 

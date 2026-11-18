@@ -1,11 +1,12 @@
 from __future__ import annotations
 
-import os
 from typing import Any
+from uuid import uuid4
 
 import boto3
 from botocore.exceptions import BotoCoreError, ClientError, NoCredentialsError
 
+from backend.app.core.config import settings
 from backend.app.models.schemas import (
     Account,
     CLOUDFRONT_REGION,
@@ -15,8 +16,8 @@ from backend.app.models.schemas import (
     WafScope,
 )
 
-ROLE_NAME = os.getenv("AWS_ROLE_NAME", "OrganizationAccountAccessRole")
-REGION = os.getenv("AWS_REGION", "us-east-1")
+ROLE_NAME = settings.aws_role_name
+REGION = settings.aws_region
 ACL_NAME = "ccoe-cloudfront-blocklist"
 IPSET_NAMES = {"ipv4": "ccoe-blocklist-ipv4", "ipv6": "ccoe-blocklist-ipv6"}
 
@@ -25,22 +26,38 @@ class AwsSecurityAdapter:
     """Leitura de segurança por conta; nenhuma operação mutável é feita neste adapter."""
 
     def __init__(self) -> None:
-        configured_accounts = os.getenv("AWS_ACCOUNT_IDS", "")
-        self.account_ids = [item.strip() for item in configured_accounts.split(",") if item.strip()]
-        self.mock_mode = not self.account_ids or os.getenv("USE_MOCK_AWS", "false").lower() == "true"
+        self.master_account_id = settings.aws_master_account_id.strip()
+        self.mock_mode = settings.use_mock_aws if settings.use_mock_aws is not None else not self.master_account_id
+        if not self.mock_mode and not self.master_account_id:
+            raise ValueError("AWS_MASTER_ACCOUNT_ID é obrigatório fora do modo mock.")
+        self._accounts_by_id: dict[str, Account] = {}
+        self._master_session_cache: boto3.Session | None = None
 
     def list_accounts(self) -> list[Account]:
         if self.mock_mode:
-            return [
+            accounts = [
                 Account(id="123456789012", name="core-platform", environment="production", status="authorized", distribution_count=4),
                 Account(id="210987654321", name="digital-products", environment="production", status="authorized", distribution_count=3),
                 Account(id="345678901234", name="sandbox-lab", environment="development", status="authorized", distribution_count=2),
             ]
-
-        return [
-            Account(id=account_id, name=f"aws-account-{account_id[-4:]}", environment="production", status="authorized", distribution_count=0)
-            for account_id in self.account_ids
-        ]
+        else:
+            organizations = self._master_session().client("organizations", region_name=REGION)
+            accounts = []
+            for page in organizations.get_paginator("list_accounts").paginate():
+                for item in page.get("Accounts", []):
+                    state = item.get("State") or item.get("Status")
+                    account_id = item["Id"]
+                    if account_id == self.master_account_id or state != "ACTIVE":
+                        continue
+                    accounts.append(Account(
+                        id=account_id,
+                        name=item["Name"],
+                        environment="production",
+                        status="authorized",
+                        distribution_count=0,
+                    ))
+        self._accounts_by_id = {account.id: account for account in accounts}
+        return accounts
 
     def list_distributions(self, account_ids: list[str]) -> list[Distribution]:
         if self.mock_mode:
@@ -79,7 +96,9 @@ class AwsSecurityAdapter:
         scope: WafScope = "CLOUDFRONT",
         region: str = CLOUDFRONT_REGION,
     ) -> TargetQueryMatch:
-        account = next((item for item in self.list_accounts() if item.id == account_id), None)
+        account = self._accounts_by_id.get(account_id)
+        if account is None and self.mock_mode:
+            account = next((item for item in self.list_accounts() if item.id == account_id), None)
         account_name = account.name if account else account_id
         if self.mock_mode:
             return self._mock_query(account_id, account_name, target, scope, region)
@@ -152,14 +171,32 @@ class AwsSecurityAdapter:
                 detail=f"Falha na consulta read-only: {exc}",
             )
 
-    def _session_for(self, account_id: str) -> boto3.Session:
+    def _master_session(self) -> boto3.Session:
+        if self._master_session_cache is not None:
+            return self._master_session_cache
         current = boto3.Session()
         current_id = current.client("sts", region_name=REGION).get_caller_identity()["Account"]
-        if account_id == current_id:
+        if current_id != self.master_account_id:
+            raise RuntimeError(
+                f"As credenciais AWS devem pertencer à conta master {self.master_account_id}; "
+                f"a identidade atual é {current_id}."
+            )
+        self._master_session_cache = current
+        return current
+
+    def _session_for(self, account_id: str) -> boto3.Session:
+        if account_id not in self._accounts_by_id:
+            raise ValueError(f"Conta não encontrada na Organization: {account_id}")
+        current = self._master_session()
+        if account_id == self.master_account_id:
             return current
+        source_identity = f"waf-query-{uuid4().hex[:12]}"
         credentials = current.client("sts", region_name=REGION).assume_role(
             RoleArn=f"arn:aws:iam::{account_id}:role/{ROLE_NAME}",
-            RoleSessionName="ccoe-cf-blocklist-readonly",
+            RoleSessionName=source_identity,
+            ExternalId=f"wafblocklist-target-{account_id}-v1",
+            SourceIdentity=source_identity,
+            DurationSeconds=900,
         )["Credentials"]
         return boto3.Session(
             aws_access_key_id=credentials["AccessKeyId"],

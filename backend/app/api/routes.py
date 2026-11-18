@@ -8,7 +8,8 @@ router = APIRouter()
 
 @router.get("/health")
 def health() -> dict[str, str]:
-    return {"status": "ok", "service": "wafblocklist-api", "mode": "mocked-dry-run"}
+    mode = "mocked-dry-run" if plan_service.adapter.mock_mode else "aws-read-only-dry-run"
+    return {"status": "ok", "service": "wafblocklist-api", "mode": mode}
 
 
 @router.get("/accounts")

@@ -19,7 +19,8 @@ Conta central
     ├── dynamodb:PutItem / Query na tabela central
     ├── logs:* no grupo da Lambda
     ├── sts:GetCallerIdentity
-    └── sts:AssumeRole somente nas ARNs autorizadas
+    ├── organizations:ListAccounts
+    └── sts:AssumeRole somente para a role read-only na mesma Organization
 
 Conta alvo A/B/N
 └── wafblocklist-readonly-query
@@ -37,7 +38,7 @@ A configuração deve seguir estas regras:
 
 - Usar roles e credenciais temporárias, nunca access keys fixas no código ou na EC2/Lambda.
 - Confiar na role exata da conta central, não em todos os principals da conta quando isso puder ser evitado.
-- Permitir `sts:AssumeRole` somente para as ARNs das roles alvo aprovadas.
+- Permitir `sts:AssumeRole` somente para a role read-only nomeada e restringir os recursos à Organization da conta master com `aws:ResourceOrgID`.
 - Usar `sts:ExternalId` para amarrar a chamada ao contexto da aplicação. External ID não é um segredo; ele aparece na policy e deve ser tratado como identificador de confiança, não como senha [3].
 - Exigir `sts:SourceIdentity` para que o `request_id` ou identificador de execução permaneça rastreável no CloudTrail [2].
 - Usar `aws:PrincipalOrgID` quando todas as contas fizerem parte da mesma AWS Organization.
@@ -107,13 +108,24 @@ A permissions policy da Lambda deve separar logs, DynamoDB e STS. Um exemplo con
       "Resource": "*"
     },
     {
-      "Sid": "AssumeOnlyApprovedTargetRoles",
+      "Sid": "DiscoverOrganizationAccounts",
       "Effect": "Allow",
-      "Action": "sts:AssumeRole",
-      "Resource": [
-        "arn:aws:iam::222222222222:role/wafblocklist-readonly-query",
-        "arn:aws:iam::333333333333:role/wafblocklist-readonly-query"
-      ]
+      "Action": "organizations:ListAccounts",
+      "Resource": "*"
+    },
+    {
+      "Sid": "AssumeReadOnlyRoleInOrganization",
+      "Effect": "Allow",
+      "Action": [
+        "sts:AssumeRole",
+        "sts:SetSourceIdentity"
+      ],
+      "Resource": "arn:aws:iam::*:role/wafblocklist-readonly-query",
+      "Condition": {
+        "StringEquals": {
+          "aws:ResourceOrgID": "o-exampleorgid"
+        }
+      }
     }
   ]
 }
@@ -125,7 +137,7 @@ Para a tabela DynamoDB, `Query` em um índice exige incluir o ARN do índice. Se
 
 ### Restrições adicionais para `sts:AssumeRole`
 
-Se a role central assume somente uma role com o mesmo nome em contas permitidas, o `Resource` deve ser uma lista explícita ou ser gerado pelo Terraform a partir de `target_account_ids`. Não usar:
+Como a aplicação descobre dinamicamente todas as subcontas ativas, o `Resource` pode usar o ARN da role read-only nomeada em qualquer conta, mas deve ser restringido com `aws:ResourceOrgID` à Organization da conta master. Não usar:
 
 ```json
 {
@@ -135,7 +147,7 @@ Se a role central assume somente uma role com o mesmo nome em contas permitidas,
 }
 ```
 
-Também não usar uma condição que permita qualquer role `wafblocklist-*` em qualquer conta sem uma allowlist de contas. Uma nova conta adicionada à Organization não deve receber acesso automaticamente sem passar pelo processo de onboarding.
+Não usar uma condição que permita qualquer role em qualquer conta. A role nomeada só deve ser criada nas subcontas após o processo de onboarding; uma conta recém-descoberta sem essa role aparecerá com erro de autorização, sem receber permissões automaticamente.
 
 ## Conta alvo: trust policy da role read-only
 
@@ -157,7 +169,10 @@ A trust policy deve confiar na role da Lambda da conta central. Exemplo para uma
       "Principal": {
         "AWS": "arn:aws:iam::111111111111:role/wafblocklist-api-execution"
       },
-      "Action": "sts:AssumeRole",
+      "Action": [
+        "sts:AssumeRole",
+        "sts:SetSourceIdentity"
+      ],
       "Condition": {
         "StringEquals": {
           "aws:PrincipalOrgID": "o-exampleorgid",
@@ -419,23 +434,21 @@ resource "aws_iam_role_policy" "target_permissions" {
 
 Definir `max_session_duration` como uma hora reduz a janela de uso das credenciais temporárias. O STS permite durações maiores dependendo da role, mas role chaining tem limite de uma hora; para uma consulta HTTP curta, não há motivo para usar 12 horas [2].
 
-## Alteração necessária no código Python
-
-O adapter atual assume a role com `RoleArn` e `RoleSessionName`. Para cumprir a trust policy proposta, ele deve enviar External ID e Source Identity:
+## Identidade da sessão STS
 
 ```python
 credentials = current.client("sts", region_name=REGION).assume_role(
     RoleArn=f"arn:aws:iam::{account_id}:role/{ROLE_NAME}",
-    RoleSessionName=f"waf-query-{request_id_short}",
-    ExternalId=external_id_for_account(account_id),
-    SourceIdentity=f"waf-query-{request_id_short}",
+    RoleSessionName=source_identity,
+    ExternalId=f"wafblocklist-target-{account_id}-v1",
+    SourceIdentity=source_identity,
     DurationSeconds=900,
 )["Credentials"]
 ```
 
-A aplicação deve obter o External ID por configuração controlada, por exemplo, SSM Parameter Store ou Secrets Manager, e manter um mapeamento por conta alvo. Não aceitar External ID informado pelo usuário final. O `request_id_short` deve ser gerado pelo backend, sanitizado e limitado a caracteres aceitos pelo STS.
+A aplicação gera `source_identity` no backend e deriva um External ID estável por conta. O External ID não é segredo; ele aparece na trust policy e serve como identificador de confiança, não como senha. Não aceitar esses valores do usuário final.
 
-O código também deve validar que `account_id` está na allowlist configurada antes de montar o ARN. A validação deve ocorrer antes da chamada STS, e não somente depois de receber um erro da AWS.
+Antes de montar o ARN, o código valida que a conta foi descoberta como subconta ativa da Organization. A trust policy deve permitir `sts:AssumeRole` e `sts:SetSourceIdentity`, além de exigir o External ID da conta e uma Source Identity no formato aprovado.
 
 O adapter deve capturar `AccessDenied`, `ExpiredToken`, `ThrottlingException` e falhas de rede como estados separados no resultado da consulta. O detalhe retornado ao usuário deve ser genérico; os detalhes completos ficam no CloudWatch e no DynamoDB, com remoção de tokens e headers sensíveis.
 
@@ -475,7 +488,7 @@ Além da validação de sintaxe, executar testes em uma conta de desenvolvimento
 5. Chamar `wafv2:GetIPSet`, `wafv2:GetWebACL` e `cloudfront:ListDistributions`: deve funcionar conforme o endpoint usado.
 6. Tentar qualquer operação de escrita WAF/CloudFront: deve falhar.
 7. Tentar acessar DynamoDB da conta alvo com a role read-only: deve falhar.
-8. Remover a conta da allowlist central: o `sts:AssumeRole` deve deixar de ser autorizado depois do apply.
+8. Remover a role read-only ou a conta da Organization: a consulta não deve conseguir assumir a role.
 9. Confirmar no CloudTrail o `roleSessionName`, `sourceIdentity`, conta de origem e role assumida.
 
 Usar IAM Access Analyzer para revisar políticas e acessos externos. A própria AWS recomenda aplicar least privilege, usar condições, revisar permissões não utilizadas e validar policies com Access Analyzer [5] [6].
@@ -484,7 +497,7 @@ Usar IAM Access Analyzer para revisar políticas e acessos externos. A própria 
 
 - [ ] A Lambda usa execution role dedicada.
 - [ ] A Lambda não usa access key fixa.
-- [ ] `sts:AssumeRole` aponta somente para ARNs de roles alvo aprovadas.
+- [ ] `sts:AssumeRole` está limitado à role read-only nomeada e à Organization da conta master.
 - [ ] Cada role alvo tem trust policy com principal central exato.
 - [ ] `aws:PrincipalOrgID` está presente quando aplicável.
 - [ ] External ID é único por vínculo e enviado em toda chamada STS.

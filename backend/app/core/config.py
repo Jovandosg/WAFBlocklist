@@ -6,6 +6,10 @@ class Settings(BaseSettings):
     environment: str = "development"
     api_prefix: str = "/api/v1"
     cors_origins: str = "http://localhost:3000"
+    aws_master_account_id: str = ""
+    aws_role_name: str = "wafblocklist-readonly-query"
+    aws_region: str = "us-east-1"
+    use_mock_aws: bool | None = None
 
     model_config = SettingsConfigDict(env_file=".env", extra="ignore")
 
