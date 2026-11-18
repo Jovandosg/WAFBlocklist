@@ -17,6 +17,15 @@ Lambda Python 3.12 (FastAPI + Mangum)
 
 A Lambda não roda dentro de uma EC2. Este módulo usa o runtime gerenciado da Lambda e não cria EC2.
 
+## Organização
+
+- `main.tf` define o prefixo comum; `lambda.tf` e `api_gateway.tf` conectam os módulos.
+- `modules/lambda` separa a função em `lambda.tf`, a role e policy em `iam.tf` e o log group em `cloudwatch.tf`.
+- `modules/api_gateway` separa a HTTP API, integração, rota e estágio em `api_gateway.tf`, a permissão de invocação em `lambda_api_gtw.tf` e o log group em `cloudwatch.tf`.
+- `moved.tf` associa os endereços antigos dos recursos aos novos endereços nos módulos.
+
+Os arquivos dentro de um mesmo módulo são lidos em conjunto pelo Terraform; mover blocos entre eles não altera seus endereços no estado. Esta separação segue as recomendações de [estrutura de código](https://www.terraform-best-practices.com/code-structure) e [formatação](https://www.terraform-best-practices.com/code-styling) do Terraform Best Practices. O provider e suas tags padrão permanecem configurados na raiz.
+
 ## Pré-requisitos
 
 - Terraform >= 1.6.
@@ -45,9 +54,19 @@ terraform apply tfplan
 terraform output api_gateway_url
 ```
 
-O `build-lambda.sh` instala as dependências em `.build/lambda`, copia o backend e cria `.build/wafblocklist-lambda.zip`. O arquivo `.build` não é versionado.
+O `build-lambda.sh` instala as dependências em `.build/lambda`, copia o backend e cria `.build/wafblocklist-lambda.zip`. O diretório `.build` não é versionado. Execute o script antes de cada plano após alterar o backend ou suas dependências e mantenha o ZIP inalterado até o apply. O Terraform calcula o hash do ZIP durante o plano e não o gera automaticamente.
 
 Para desenvolvimento sem consultas AWS, deixe `master_account_id = ""`. A Lambda será configurada com `USE_MOCK_AWS=true`. Para produção, configure o ID da conta de gerenciamento da Organization. A aplicação enumera as contas ativas, exceto a master; consultas em subcontas só terão êxito quando a role read-only estiver provisionada nelas.
+
+## Migração de uma instalação existente
+
+Os blocos `moved` preservam a associação com os recursos AWS existentes ao executar o plano com o mesmo estado e as mesmas variáveis. Antes de aplicar, faça backup seguro do estado, rode `terraform init` e examine `terraform plan`: os recursos AWS devem aparecer como movidos, sem criação ou destruição apenas pela reorganização. A remoção de `terraform_data.lambda_package` é esperada: era um recurso lógico, sem correspondente na AWS, que executava o build durante o apply, depois do cálculo do hash no plano. O build agora é exclusivamente uma etapa anterior ao plano. Não aplique se houver outras alterações inesperadas. O plano real ainda pode apresentar diferenças por alterações externas ou de configuração. Não remova `moved.tf` enquanto houver estados que ainda precisam ser migrados.
+
+O plano também pode remover `AWS_REGION` das variáveis configuradas da Lambda: essa variável é reservada e fornecida automaticamente pelo runtime na região da função. O estado remoto protegido continua sendo uma recomendação para produção; esta reorganização não configura nem migra um backend automaticamente.
+
+## Testes locais
+
+Além de `terraform fmt -check -recursive` e `terraform validate`, execute `terraform test` com Terraform 1.7 ou superior. Os testes usam provider AWS simulado, não precisam de credenciais e não criam recursos. O caminho de pacote nos testes é apenas uma entrada para cálculo de hash, não um ZIP de deploy.
 
 ## Variáveis importantes
 
