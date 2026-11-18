@@ -24,9 +24,10 @@ export interface TargetLookup {
 export interface TargetQueryMatch {
   account_id: string;
   account_name: string;
-  status: "found" | "not_found" | "error";
+  status: "found" | "not_found" | "partial" | "error";
   locations: string[];
   detail: string | null;
+  errors: string[];
 }
 
 export interface TargetQueryResponse {
@@ -37,7 +38,7 @@ export interface TargetQueryResponse {
   matches: TargetQueryMatch[];
 }
 
-export type WafScope = "CLOUDFRONT" | "REGIONAL";
+export type WafScope = "CLOUDFRONT" | "REGIONAL" | "ALL";
 
 export interface ChangePlanRequest {
   account_ids: string[];

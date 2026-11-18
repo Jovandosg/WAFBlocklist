@@ -39,7 +39,7 @@ A documentação interativa da API fica em `http://localhost:8000/docs`.
 - `GET /api/v1/accounts` — contas mockadas ou subcontas ativas da AWS Organization, sem a master;
 - `GET /api/v1/regions` — regiões AWS disponíveis para WAFv2 Regional;
 - `POST /api/v1/targets/lookup` — recebe um IP, CIDR ou URL/domínio digitado pelo usuário e devolve o alvo normalizado;
-- `POST /api/v1/targets/query` — consulta o alvo nas contas selecionadas em modo AWS read-only, no escopo CloudFront ou Regional;
+- `POST /api/v1/targets/query` — consulta o alvo nas contas selecionadas em modo AWS read-only, no escopo CloudFront, Regional ou `ALL` (ambos);
 - `POST /api/v1/validate` — validação e normalização do payload;
 - `POST /api/v1/plans` — cria plano DRY-RUN;
 - `GET /api/v1/plans/{plan_id}` — consulta plano em memória.
@@ -63,9 +63,11 @@ O endpoint faz validação e normalização; ele não consulta DNS ou threat int
 
 ## Consulta nas contas conectadas
 
-Quando `AWS_MASTER_ACCOUNT_ID` estiver configurado e `USE_MOCK_AWS=false`, o backend exige credenciais da conta master `588361999793`, enumera as subcontas ativas da Organization via `organizations:ListAccounts` e assume `AWS_ROLE_NAME` em cada uma via STS. A role da aplicação só pode assumir essa role nomeada dentro da mesma Organization; cada subconta precisa ter a role read-only criada e confiar na role da aplicação. O escopo CloudFront permanece fixo em `us-east-1`; para WAF Regional, o usuário pode selecionar uma região disponível para WAFv2.
+Quando `AWS_MASTER_ACCOUNT_ID` estiver configurado e `USE_MOCK_AWS=false`, o backend exige credenciais da conta master `588361999793`, enumera as subcontas ativas da Organization via `organizations:ListAccounts` e assume `AWS_ROLE_NAME` em cada uma via STS. A role da aplicação só pode assumir essa role nomeada dentro da mesma Organization; cada subconta precisa ter a role read-only criada e confiar na role da aplicação. A interface consulta o CloudFront global em `us-east-1` e o WAF Regional em todas as regiões comerciais disponíveis no catálogo WAFv2 do botocore instalado.
 
-Ao clicar em **Consultar nas contas**, o backend faz somente leituras. No escopo CloudFront, procura IPv4/IPv6 nos IP Sets `ccoe-blocklist-ipv4` e `ccoe-blocklist-ipv6`, procura domínios na regra `block-domains` da Web ACL `ccoe-cloudfront-blocklist` e lista as distribuições CloudFront associadas a essa Web ACL. No escopo Regional, consulta os IP Sets e Web ACLs da região selecionada, procurando os endereços IP e a regra `block-domains`. Nenhuma criação, atualização ou associação é executada.
+Ao clicar em **Consultar nas contas**, o backend faz somente leituras. No escopo CloudFront, procura IPv4/IPv6 nos IP Sets `ccoe-blocklist-ipv4` e `ccoe-blocklist-ipv6`, procura domínios na regra `block-domains` da Web ACL `ccoe-cloudfront-blocklist` e lista as distribuições CloudFront associadas a essa Web ACL quando o alvo é encontrado. No escopo Regional, consulta os IP Sets e Web ACLs de cada região, procurando os endereços IP e a regra `block-domains`. Cada resultado é identificado por escopo e região; falhas de acesso ou regiões não habilitadas são apresentadas como erros, sem indicar falsamente que a busca foi completa. A API ainda aceita consultas individuais `CLOUDFRONT` e `REGIONAL`. Nenhuma criação, atualização ou associação é executada.
+
+Uma busca em muitas contas e regiões pode exceder o tempo limite do API Gateway (até 30 segundos); a execução assíncrona ainda é um incremento pendente. A lista de regiões depende da versão do botocore instalado e inclui regiões opt-in que podem não estar habilitadas em todas as contas.
 
 A role da aplicação precisa de `organizations:ListAccounts`, `sts:GetCallerIdentity`, `sts:AssumeRole` e `sts:SetSourceIdentity`, limitada à role read-only dentro da Organization. A role assumida em cada subconta deve permitir somente leituras como `wafv2:ListIPSets`, `wafv2:GetIPSet`, `wafv2:ListWebACLs`, `wafv2:GetWebACL` e `cloudfront:ListDistributions`. Sua trust policy deve confiar na role da Lambda e exigir o External ID `wafblocklist-target-<ID_DA_CONTA>-v1` e uma Source Identity `waf-query-*`. O resultado informa por conta se o alvo foi encontrado, não encontrado ou se houve erro de autorização/conectividade.
 

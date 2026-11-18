@@ -52,6 +52,7 @@ code, .eyebrow, .field-count, .limit-note, .topbar-status, .dry-run-badge, .rail
 .query-status { width: 7px; height: 7px; flex: 0 0 auto; border-radius: 50%; background:light-dark(#dfeaed, #1d353e); }
 .query-status.found { background:light-dark(#0e6071, #176878); box-shadow:0 0 0 3px light-dark(#c4dce1, #2b515a); }
 .query-status.error { background:light-dark(#c66d63, #a9544b); box-shadow:0 0 0 3px light-dark(#ebc7c1, #65403b); }
+.query-status.partial { background:light-dark(#ac6c18, #d19a43); box-shadow:0 0 0 3px light-dark(#f2dfbd, #59472c); }
 .query-account { display: flex; flex-direction: column; gap: 2px; min-width: 155px; color:light-dark(#21697a, #62c7d7); }
 .query-account code { color:light-dark(#708990, #b6c8cd); font-size: 8px; }
 .query-detail { margin-left: auto; color:light-dark(#3d5d66, #b6c8cd); text-align: right; font-size: 9px; }

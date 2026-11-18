@@ -1,9 +1,10 @@
-from unittest.mock import Mock, patch
+from unittest.mock import Mock, call, patch
 
 import pytest
+from botocore.exceptions import ClientError
 
 from backend.app.integrations.aws.mock_adapter import AwsSecurityAdapter
-from backend.app.models.schemas import TargetLookupResponse, TargetQueryRequest
+from backend.app.models.schemas import TargetLookupResponse, TargetQueryMatch, TargetQueryRequest
 from backend.app.services.plans import PlanService
 
 
@@ -87,6 +88,72 @@ def test_regional_query_uses_selected_region_and_scope():
     waf.get_ip_set.assert_called_once_with(Name="regional-blocklist", Scope="REGIONAL", Id="set-id")
     assert result.status == "found"
     assert result.locations == ["IP Set regional-blocklist"]
+
+
+def test_all_scope_queries_every_region_once_and_reports_partial_failures():
+    adapter = AwsSecurityAdapter()
+    adapter.list_accounts()
+    adapter.mock_mode = False
+    target = TargetLookupResponse(kind="ipv4", normalized="192.0.2.10/32", display="IPV4 · 192.0.2.10/32")
+    session = Mock()
+
+    def region_result(account_id, target, scope, region, *, session):
+        if scope == "REGIONAL" and region == "us-west-2":
+            return TargetQueryMatch(account_id=account_id, account_name="core-platform", status="error", detail="Access denied")
+        locations = ["IP Set blocklist"] if scope == "REGIONAL" and region == "us-east-1" else []
+        return TargetQueryMatch(
+            account_id=account_id,
+            account_name="core-platform",
+            status="found" if locations else "not_found",
+            locations=locations,
+        )
+
+    with patch("backend.app.integrations.aws.mock_adapter.AWS_WAF_REGIONS", {"us-east-1", "us-west-2"}), \
+            patch.object(adapter, "_session_for", return_value=session) as assume, \
+            patch.object(adapter, "query_target", side_effect=region_result) as query:
+        result = adapter.query_target_all("123456789012", target)
+
+    assume.assert_called_once_with("123456789012")
+    query.assert_has_calls([
+        call("123456789012", target, "CLOUDFRONT", "us-east-1", session=session),
+        call("123456789012", target, "REGIONAL", "us-east-1", session=session),
+        call("123456789012", target, "REGIONAL", "us-west-2", session=session),
+    ], any_order=True)
+    assert query.call_count == 3
+    assert result.status == "partial"
+    assert result.locations == ["REGIONAL · us-east-1 · IP Set blocklist"]
+    assert result.errors == ["REGIONAL · us-west-2: Access denied"]
+
+
+def test_all_scope_reports_account_access_failure_without_claiming_not_found():
+    adapter = AwsSecurityAdapter()
+    adapter.list_accounts()
+    adapter.mock_mode = False
+    target = TargetLookupResponse(kind="ipv4", normalized="192.0.2.10/32", display="IPV4 · 192.0.2.10/32")
+    error = ClientError({"Error": {"Code": "AccessDenied", "Message": "denied"}}, "AssumeRole")
+
+    with patch.object(adapter, "_session_for", side_effect=error):
+        result = adapter.query_target_all("123456789012", target)
+
+    assert result.status == "error"
+    assert "Falha ao acessar a conta" in result.detail
+
+
+def test_cloudfront_distribution_alone_does_not_count_as_target_match():
+    adapter = AwsSecurityAdapter()
+    adapter.mock_mode = False
+    target = TargetLookupResponse(kind="ipv4", normalized="192.0.2.10/32", display="IPV4 · 192.0.2.10/32")
+    waf = Mock()
+    waf.list_ip_sets.return_value = {"IPSets": []}
+    waf.list_web_acls.return_value = {"WebACLs": [{"Name": "ccoe-cloudfront-blocklist", "Id": "acl", "ARN": "arn:acl"}]}
+    waf.get_web_acl.return_value = {"WebACL": {"Rules": []}}
+    session = Mock()
+    session.client.return_value = waf
+
+    result = adapter.query_target("123456789012", target, session=session)
+
+    assert result.status == "not_found"
+    session.client.assert_called_once_with("wafv2", region_name="us-east-1")
 
 
 def test_live_adapter_lists_active_subaccounts_and_excludes_master():

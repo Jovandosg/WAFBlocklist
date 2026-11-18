@@ -16,6 +16,7 @@ MAX_DOMAINS = 30
 CLOUDFRONT_REGION = "us-east-1"
 AWS_WAF_REGIONS = frozenset(get_session().get_available_regions("wafv2"))
 WafScope = Literal["CLOUDFRONT", "REGIONAL"]
+QueryScope = Literal["CLOUDFRONT", "REGIONAL", "ALL"]
 
 
 def split_lines(values: list[str]) -> list[str]:
@@ -102,7 +103,7 @@ def normalize_target(raw: str) -> TargetLookupResponse:
 class TargetQueryRequest(BaseModel):
     account_ids: list[str] = Field(min_length=1)
     target: str = Field(min_length=1, max_length=2048)
-    scope: WafScope = "CLOUDFRONT"
+    scope: QueryScope = "CLOUDFRONT"
     region: str = CLOUDFRONT_REGION
 
     @field_validator("region")
@@ -122,14 +123,15 @@ class TargetQueryRequest(BaseModel):
 class TargetQueryMatch(BaseModel):
     account_id: str
     account_name: str
-    status: Literal["found", "not_found", "error"]
+    status: Literal["found", "not_found", "partial", "error"]
     locations: list[str] = Field(default_factory=list)
     detail: str | None = None
+    errors: list[str] = Field(default_factory=list)
 
 
 class TargetQueryResponse(BaseModel):
     target: TargetLookupResponse
-    scope: WafScope
+    scope: QueryScope
     region: str
     mode: Literal["aws_read_only", "mocked"]
     matches: list[TargetQueryMatch]

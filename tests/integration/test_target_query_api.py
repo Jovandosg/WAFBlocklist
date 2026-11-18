@@ -69,6 +69,22 @@ def test_regional_query_accepts_selected_region():
     assert response.json()["region"] == "us-west-2"
 
 
+def test_all_scope_queries_global_and_regional_waf():
+    response = client.post(
+        "/api/v1/targets/query",
+        json={"account_ids": ["123456789012"], "target": "192.0.2.10", "scope": "ALL"},
+    )
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["scope"] == "ALL"
+    assert body["region"] == "all"
+    assert body["matches"][0]["status"] == "found"
+    assert any(location.startswith("CLOUDFRONT · us-east-1 ·") for location in body["matches"][0]["locations"])
+    assert any(location.startswith("REGIONAL · us-west-2 ·") for location in body["matches"][0]["locations"])
+    assert body["matches"][0]["errors"] == []
+
+
 def test_cloudfront_query_rejects_region_other_than_us_east_1():
     response = client.post(
         "/api/v1/targets/query",

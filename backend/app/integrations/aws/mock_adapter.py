@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from concurrent.futures import ThreadPoolExecutor
+from threading import Lock
 from typing import Any
 from uuid import uuid4
 
@@ -9,6 +11,7 @@ from botocore.exceptions import BotoCoreError, ClientError, NoCredentialsError
 from backend.app.core.config import settings
 from backend.app.models.schemas import (
     Account,
+    AWS_WAF_REGIONS,
     CLOUDFRONT_REGION,
     Distribution,
     TargetLookupResponse,
@@ -32,6 +35,7 @@ class AwsSecurityAdapter:
             raise ValueError("AWS_MASTER_ACCOUNT_ID é obrigatório fora do modo mock.")
         self._accounts_by_id: dict[str, Account] = {}
         self._master_session_cache: boto3.Session | None = None
+        self._client_lock = Lock()
 
     def list_accounts(self) -> list[Account]:
         if self.mock_mode:
@@ -95,6 +99,8 @@ class AwsSecurityAdapter:
         target: TargetLookupResponse,
         scope: WafScope = "CLOUDFRONT",
         region: str = CLOUDFRONT_REGION,
+        *,
+        session: boto3.Session | None = None,
     ) -> TargetQueryMatch:
         account = self._accounts_by_id.get(account_id)
         if account is None and self.mock_mode:
@@ -104,9 +110,10 @@ class AwsSecurityAdapter:
             return self._mock_query(account_id, account_name, target, scope, region)
 
         try:
-            session = self._session_for(account_id)
+            session = session or self._session_for(account_id)
             waf_region = CLOUDFRONT_REGION if scope == "CLOUDFRONT" else region
-            waf = session.client("wafv2", region_name=waf_region)
+            with self._client_lock:
+                waf = session.client("wafv2", region_name=waf_region)
             locations: list[str] = []
 
             if target.kind in {"ipv4", "ipv6"}:
@@ -127,7 +134,7 @@ class AwsSecurityAdapter:
                     if target.normalized in detail.get("Addresses", []):
                         locations.append(f"IP Set {ipset['Name']}")
 
-            if scope == "CLOUDFRONT":
+            if scope == "CLOUDFRONT" and locations:
                 acl = self._find_named(waf, "web_acls", ACL_NAME, scope)
                 web_acls = [acl] if acl else []
             elif target.kind == "domain":
@@ -150,7 +157,8 @@ class AwsSecurityAdapter:
                             break
 
                 if scope == "CLOUDFRONT":
-                    cloudfront = session.client("cloudfront", region_name=CLOUDFRONT_REGION)
+                    with self._client_lock:
+                        cloudfront = session.client("cloudfront", region_name=CLOUDFRONT_REGION)
                     for page in cloudfront.get_paginator("list_distributions").paginate():
                         for distribution in page.get("DistributionList", {}).get("Items", []):
                             if distribution.get("WebACLId") == acl["ARN"]:
@@ -170,6 +178,51 @@ class AwsSecurityAdapter:
                 status="error",
                 detail=f"Falha na consulta read-only: {exc}",
             )
+
+    def query_target_all(self, account_id: str, target: TargetLookupResponse) -> TargetQueryMatch:
+        account = self._accounts_by_id.get(account_id)
+        account_name = account.name if account else account_id
+        try:
+            session = None if self.mock_mode else self._session_for(account_id)
+        except (BotoCoreError, ClientError, NoCredentialsError) as exc:
+            return TargetQueryMatch(
+                account_id=account_id,
+                account_name=account_name,
+                status="error",
+                detail=f"Falha ao acessar a conta: {exc}",
+            )
+
+        scopes: list[tuple[WafScope, str]] = [("CLOUDFRONT", CLOUDFRONT_REGION)]
+        scopes.extend(("REGIONAL", region) for region in sorted(AWS_WAF_REGIONS))
+        with ThreadPoolExecutor(max_workers=8) as executor:
+            results = list(executor.map(
+                lambda item: self.query_target(account_id, target, item[0], item[1], session=session),
+                scopes,
+            ))
+
+        locations = [
+            f"{scope} · {region} · {location}"
+            for (scope, region), result in zip(scopes, results)
+            for location in result.locations
+        ]
+        errors = [
+            f"{scope} · {region}: {result.detail}"
+            for (scope, region), result in zip(scopes, results)
+            if result.status == "error"
+        ]
+        status = "partial" if errors and len(errors) < len(scopes) else "error" if errors else "found" if locations else "not_found"
+        return TargetQueryMatch(
+            account_id=account_id,
+            account_name=account_name,
+            status=status,
+            locations=locations,
+            errors=errors,
+            detail=(
+                "Consulta incompleta; verifique as regiões com erro." if errors
+                else "Encontrado em recursos de configuração read-only." if locations
+                else "Nenhuma ocorrência encontrada nos recursos consultados."
+            ),
+        )
 
     def _master_session(self) -> boto3.Session:
         if self._master_session_cache is not None:
@@ -250,6 +303,8 @@ class AwsSecurityAdapter:
             ("123456789012", "domain", "example.com"): "Web ACL block-domains",
         }
         location = known.get((account_id, target.kind, target.normalized))
+        if scope == "REGIONAL" and region != "us-west-2":
+            location = None
         if location and scope == "REGIONAL":
             location = f"{location} · {region}"
         return TargetQueryMatch(
